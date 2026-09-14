@@ -40,3 +40,27 @@ msgstr "Password"
 
 msgid "plugins.paymethod.qi.error"
 msgstr "A transaction error occurred. Please contact the journal manager for details."
+
+msgid "plugins.paymethod.qi.success"
+msgstr "Your payment was received successfully. Thank you!"
+
+msgid "plugins.paymethod.qi.pending"
+msgstr "Your payment is being confirmed. This can take a few minutes; please check back shortly or contact the journal manager if the status does not update."
+
+msgid "plugins.paymethod.qi.settings.webhookPublicKey"
+msgstr "Webhook Public Key"
+
+msgid "plugins.paymethod.qi.settings.webhookPublicKey.description"
+msgstr "The PEM-format public key provided by Qi Card support, used to verify the authenticity of incoming payment webhook notifications."
+
+msgid "plugins.paymethod.qi.discussion.paymentRequired.title"
+msgstr "Publication Fee Payment Required"
+
+msgid "plugins.paymethod.qi.discussion.paymentRequired.body"
+msgstr "<p>Your submission has been accepted for publication. To complete the process, please pay the publication fee using the link below:</p><p><a href=\"{$paymentUrl}\">{$paymentUrl}</a></p><p>Please contact the journal manager if you have any questions.</p>"
+
+msgid "plugins.paymethod.qi.editor.paymentReceived.subject"
+msgstr "Publication Fee Received"
+
+msgid "plugins.paymethod.qi.editor.paymentReceived.body"
+msgstr "The author has completed the publication fee payment for submission #{$submissionId} \"{$submissionTitle}\". The submission status has been updated automatically."

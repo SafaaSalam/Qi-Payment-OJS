@@ -40,3 +40,27 @@ msgstr "كلمة المرور"
 
 msgid "plugins.paymethod.qi.error"
 msgstr "حدث خطأ في المعاملة. يرجى الاتصال بمدير المجلة للحصول على التفاصيل."
+
+msgid "plugins.paymethod.qi.success"
+msgstr "تم استلام دفعتك بنجاح. شكراً لك!"
+
+msgid "plugins.paymethod.qi.pending"
+msgstr "جارٍ تأكيد عملية الدفع الخاصة بك. قد يستغرق ذلك بضع دقائق؛ يرجى التحقق مرة أخرى بعد قليل أو الاتصال بمدير المجلة إذا لم تتحدث الحالة."
+
+msgid "plugins.paymethod.qi.settings.webhookPublicKey"
+msgstr "المفتاح العام لإشعارات Webhook"
+
+msgid "plugins.paymethod.qi.settings.webhookPublicKey.description"
+msgstr "المفتاح العام بصيغة PEM المقدم من دعم Qi Card، يُستخدم للتحقق من صحة إشعارات الدفع الواردة عبر Webhook."
+
+msgid "plugins.paymethod.qi.discussion.paymentRequired.title"
+msgstr "مطلوب سداد رسوم النشر"
+
+msgid "plugins.paymethod.qi.discussion.paymentRequired.body"
+msgstr "<p>تم قبول بحثك للنشر. لإتمام العملية، يرجى سداد رسوم النشر عبر الرابط أدناه:</p><p><a href=\"{$paymentUrl}\">{$paymentUrl}</a></p><p>تواصل مع مدير المجلة إن كانت لديك أي استفسارات.</p>"
+
+msgid "plugins.paymethod.qi.editor.paymentReceived.subject"
+msgstr "تم استلام رسوم النشر"
+
+msgid "plugins.paymethod.qi.editor.paymentReceived.body"
+msgstr "أتمّ المؤلف سداد رسوم النشر للبحث رقم #{$submissionId} \"{$submissionTitle}\". تم تحديث حالة البحث تلقائياً."
