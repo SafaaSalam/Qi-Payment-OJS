@@ -19,13 +19,18 @@ namespace APP\plugins\paymethod\qi;
 use APP\core\Application;
 use APP\core\Request;
 use APP\facades\Repo;
+use APP\payment\ojs\OJSPaymentManager;
 use APP\template\TemplateManager;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Mail;
 use PKP\components\forms\context\PKPPaymentSettingsForm;
 use PKP\config\Config;
+use PKP\core\PKPApplication;
 use PKP\db\DAORegistry;
 use PKP\mail\Mailable;
+use PKP\observers\events\DecisionAdded;
 use PKP\plugins\Hook;
 use PKP\plugins\PaymethodPlugin;
 use PKP\security\Role;
@@ -70,7 +75,113 @@ class QiPaymentPlugin extends PaymethodPlugin
 
         $this->addLocaleData();
         Hook::add('Form::config::before', $this->addSettings(...));
+        Event::listen(DecisionAdded::class, $this->onDecisionAdded(...));
         return true;
+    }
+
+    /**
+     * After an Accept decision that requested the publication fee, open a
+     * discussion with the author(s) containing the payment link. Runs after
+     * core has queued the payment, so the queuedPaymentId is available.
+     */
+    public function onDecisionAdded(DecisionAdded $event): void
+    {
+        try {
+            $context = $event->context;
+            if ($context->getData('paymentPluginName') !== $this->getName()) {
+                return;
+            }
+
+            $paymentRequested = false;
+            foreach ($event->actions as $action) {
+                if (($action['id'] ?? null) === 'payment') {
+                    $paymentRequested = filter_var($action['requestPayment'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                }
+            }
+            if (!$paymentRequested) {
+                return;
+            }
+
+            $submission = $event->submission;
+            $queuedPaymentId = $this->findPublicationQueuedPaymentId($submission->getId());
+            if (!$queuedPaymentId) {
+                error_log('Qi: no queued publication payment found for submission ' . $submission->getId() . '; payment discussion not created.');
+                return;
+            }
+
+            $request = Application::get()->getRequest();
+            $paymentUrl = $request->getDispatcher()->url(
+                $request,
+                PKPApplication::ROUTE_PAGE,
+                $context->getPath(),
+                'payment',
+                'pay',
+                [$queuedPaymentId]
+            );
+
+            $authorIds = $this->getAssignedUserIds($submission->getId(), [Role::ROLE_ID_AUTHOR]);
+            if (empty($authorIds)) {
+                return;
+            }
+            $editor = $event->editor;
+            $participantIds = array_values(array_unique(array_merge([$editor->getId()], $authorIds)));
+
+            $title = __('plugins.paymethod.qi.discussion.paymentRequired.title');
+            $body = __('plugins.paymethod.qi.discussion.paymentRequired.body', ['paymentUrl' => $paymentUrl]);
+
+            // OJS 3.5+: Repo::query(); OJS 3.4: QueryDAO. Same signature, and both email participants.
+            if (method_exists(Repo::class, 'query')) {
+                Repo::query()->addQuery($submission->getId(), WORKFLOW_STAGE_ID_EDITING, $title, $body, $editor, $participantIds, $context->getId(), true);
+            } else {
+                DAORegistry::getDAO('QueryDAO')->addQuery($submission->getId(), WORKFLOW_STAGE_ID_EDITING, $title, $body, $editor, $participantIds, $context->getId(), true);
+            }
+        } catch (\Throwable $e) {
+            error_log('Qi: failed to create payment discussion: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Queued payments are stored serialized, so scan the most recent ones for
+     * this submission's publication fee.
+     */
+    protected function findPublicationQueuedPaymentId(int $submissionId): ?int
+    {
+        $queuedPaymentDao = DAORegistry::getDAO('QueuedPaymentDAO'); /** @var \PKP\payment\QueuedPaymentDAO $queuedPaymentDao */
+        $ids = DB::table('queued_payments')->orderByDesc('queued_payment_id')->limit(50)->pluck('queued_payment_id');
+        foreach ($ids as $id) {
+            $queuedPayment = $queuedPaymentDao->getById((int) $id);
+            if ($queuedPayment
+                && (int) $queuedPayment->getAssocId() === $submissionId
+                && (int) $queuedPayment->getType() === OJSPaymentManager::PAYMENT_TYPE_PUBLICATION) {
+                return (int) $id;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * User IDs assigned to a submission with the given roles (OJS 3.4 and 3.5).
+     */
+    protected function getAssignedUserIds(int $submissionId, array $roleIds): array
+    {
+        // OJS 3.4 also has a StageAssignment class, but only 3.5+ makes it an Eloquent model.
+        if (is_subclass_of(StageAssignment::class, \Illuminate\Database\Eloquent\Model::class)) {
+            return StageAssignment::withSubmissionIds([$submissionId])
+                ->withRoleIds($roleIds)
+                ->get()
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        $stageAssignmentDao = DAORegistry::getDAO('StageAssignmentDAO');
+        $userIds = [];
+        foreach ($stageAssignmentDao->getBySubmissionAndRoleIds($submissionId, $roleIds)->toArray() as $assignment) {
+            $userIds[] = (int) $assignment->getUserId();
+        }
+        return array_values(array_unique($userIds));
     }
 
     /**
@@ -147,11 +258,14 @@ class QiPaymentPlugin extends PaymethodPlugin
      */
     public function saveSettings(string $hookname, array $args)
     {
-        $illuminateRequest = $args[0]; /** @var \Illuminate\Http\Request $illuminateRequest */
+        $apiRequest = $args[0];
         $request = $args[1]; /** @var Request $request */
         $updatedSettings = $args[3]; /** @var Collection $updatedSettings */
 
-        $allParams = $illuminateRequest->input();
+        // OJS 3.5 passes an Illuminate request; OJS 3.4 passes a Slim request.
+        $allParams = method_exists($apiRequest, 'input')
+            ? $apiRequest->input()
+            : (array) $apiRequest->getParsedBody();
         $saveParams = [];
         foreach ($allParams as $param => $val) {
             switch ($param) {
@@ -447,13 +561,7 @@ class QiPaymentPlugin extends PaymethodPlugin
                 ? $submission->getCurrentPublication()->getLocalizedTitle()
                 : (string) $submissionId;
 
-            // Collect editors assigned to this submission (managers + section editors).
-            $editorIds = StageAssignment::withSubmissionIds([$submissionId])
-                ->withRoleIds([Role::ROLE_ID_MANAGER, Role::ROLE_ID_SUB_EDITOR])
-                ->get()
-                ->pluck('user_id')
-                ->unique()
-                ->all();
+            $editorIds = $this->getAssignedUserIds($submissionId, [Role::ROLE_ID_MANAGER, Role::ROLE_ID_SUB_EDITOR]);
 
             if (empty($editorIds)) {
                 return;
@@ -476,7 +584,7 @@ class QiPaymentPlugin extends PaymethodPlugin
 
                 Mail::send($mailable);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             error_log('Qi: failed to send editor payment notification: ' . $e->getMessage());
         }
     }
