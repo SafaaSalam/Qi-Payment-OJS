@@ -66,14 +66,14 @@ class QiPaymentForm extends Form
             $testMode = $this->_qiPaymentPlugin->getSetting($journalId, 'qiTestMode');
             $apiHost = $this->_qiPaymentPlugin->getSetting($journalId, 'apiHost');
             if (empty($apiHost)) {
-                $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
+                $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq/api/v1' : 'https://3ds-api.qi.iq/api/v1';
             }
-            $apiHost = rtrim($apiHost, '/');
+            $apiHost = rtrim(trim($apiHost), '/');
 
             // Setup credentials
             $terminalId = $this->_qiPaymentPlugin->getSetting($journalId, 'terminalId');
-            $username = $this->_qiPaymentPlugin->getSetting($journalId, 'username');
-            $password = $this->_qiPaymentPlugin->getSetting($journalId, 'password');
+            $username = trim((string) $this->_qiPaymentPlugin->getSetting($journalId, 'username'));
+            $password = trim((string) $this->_qiPaymentPlugin->getSetting($journalId, 'password'));
 
             // Construct callback return URL
             $returnUrl = $request->url(
@@ -101,7 +101,7 @@ class QiPaymentForm extends Form
                 'appChannel' => false,
             ];
 
-            $url = $apiHost . '/api/v1/payment';
+            $url = $apiHost . '/payment';
             $headers = [
                 'X-Terminal-Id: ' . $terminalId,
                 'Authorization: Basic ' . base64_encode($username . ':' . $password),

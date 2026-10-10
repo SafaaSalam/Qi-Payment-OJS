@@ -341,48 +341,65 @@ class QiPaymentPlugin extends PaymethodPlugin
     }
 
     /**
-     * Handle Qi's asynchronous webhook (POST notificationUrl). This is the
-     * authoritative source of payment completion, since the browser redirect
-     * carries no signed payment result. Always responds 200 (except on
-     * signature failure) so Qi does not endlessly retry.
+     * Handle Qi's asynchronous webhook (POST notificationUrl).
+     *
+     * The notification body is never trusted on its own: its paymentId must match
+     * the one stored for this queued payment, and the result is re-fetched from
+     * Qi's authenticated status API. This keeps the webhook secure even though Qi
+     * does not document the X-Signature data format, so the signature is only
+     * checked for diagnostics. Responds 200 so Qi stops retrying, except on a
+     * transient failure (e.g. Qi API unreachable), where a 500 asks Qi to retry.
      */
     protected function handleWebhook($request)
     {
         $journal = $request->getJournal();
         $journalId = $journal->getId();
 
-        $rawBody = file_get_contents('php://input');
-        $data = json_decode((string) $rawBody, true);
-        if (!is_array($data)) {
-            error_log('Qi webhook: could not parse JSON body: ' . $rawBody);
-            http_response_code(400);
+        $rawBody = (string) file_get_contents('php://input');
+        $data = json_decode($rawBody, true);
+        if (!is_array($data) || empty($data['paymentId'])) {
+            error_log('Qi webhook: ignoring notification without paymentId: ' . $rawBody);
+            http_response_code(200);
             return;
         }
+        $notifiedPaymentId = (string) $data['paymentId'];
 
-        $publicKeyPem = $this->getSetting($journalId, 'webhookPublicKey');
-        $signature = $_SERVER['HTTP_X_SIGNATURE'] ?? null;
-        if (empty($publicKeyPem) || empty($signature) || !$this->verifyWebhookSignature($data, (string) $signature, (string) $publicKeyPem)) {
-            error_log('Qi webhook: missing or invalid X-Signature; rejecting notification for paymentId ' . ($data['paymentId'] ?? '?'));
-            http_response_code(403);
-            return;
+        $publicKeyPem = (string) $this->getSetting($journalId, 'webhookPublicKey');
+        $signature = (string) ($_SERVER['HTTP_X_SIGNATURE'] ?? '');
+        if ($publicKeyPem !== '' && $signature !== '' && !$this->verifyWebhookSignature($data, $signature, $publicKeyPem)) {
+            error_log('Qi webhook: X-Signature did not verify for paymentId ' . $notifiedPaymentId . ' (continuing with status API check). Signature: ' . $signature . ' Body: ' . $rawBody);
         }
 
-        $queuedPaymentId = $request->getUserVar('queuedPaymentId');
+        $queuedPaymentId = (int) $request->getUserVar('queuedPaymentId');
         $queuedPaymentDao = DAORegistry::getDAO('QueuedPaymentDAO'); /** @var \PKP\payment\QueuedPaymentDAO $queuedPaymentDao */
-        $queuedPayment = $queuedPaymentDao->getById($queuedPaymentId);
+        $queuedPayment = $queuedPaymentId ? $queuedPaymentDao->getById($queuedPaymentId) : null;
         if (!$queuedPayment) {
-            // Already fulfilled (e.g. the browser-return leg beat the webhook here) or invalid.
-            // Respond 200 either way so Qi doesn't retry a stale/duplicate notification.
+            // Already fulfilled (e.g. the browser return got here first), or not an OJS payment.
             http_response_code(200);
             return;
         }
 
-        if ($this->isSuccessfulStatus($data) && $this->amountAndCurrencyMatch($data, $queuedPayment)) {
+        $storedPaymentId = (string) $this->getSetting($journalId, 'qiPaymentId_' . $queuedPayment->getId());
+        if ($storedPaymentId === '' || !hash_equals($storedPaymentId, $notifiedPaymentId)) {
+            error_log("Qi webhook: paymentId {$notifiedPaymentId} does not belong to queuedPaymentId {$queuedPaymentId}; ignoring.");
+            http_response_code(200);
+            return;
+        }
+
+        try {
+            $responseData = $this->fetchPaymentStatus($journalId, $storedPaymentId);
+        } catch (\Throwable $e) {
+            error_log('Qi webhook: status check failed, asking Qi to retry: ' . $e->getMessage());
+            http_response_code(500);
+            return;
+        }
+
+        if ($this->isSuccessfulStatus($responseData) && $this->amountAndCurrencyMatch($responseData, $queuedPayment)) {
             $paymentManager = Application::get()->getPaymentManager($journal);
             $paymentManager->fulfillQueuedPayment($request, $queuedPayment, $this->getName());
             $this->notifyEditorPaymentReceived($journal, $queuedPayment);
         } else {
-            error_log('Qi webhook: payment ' . ($data['paymentId'] ?? '?') . ' not confirmed successful. Payload: ' . $rawBody);
+            error_log('Qi webhook: payment ' . $storedPaymentId . ' not successful. Status: ' . json_encode($responseData));
         }
 
         http_response_code(200);
@@ -447,15 +464,15 @@ class QiPaymentPlugin extends PaymethodPlugin
         $testMode = $this->getSetting($journalId, 'qiTestMode');
         $apiHost = $this->getSetting($journalId, 'apiHost');
         if (empty($apiHost)) {
-            $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
+            $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq/api/v1' : 'https://3ds-api.qi.iq/api/v1';
         }
-        $apiHost = rtrim($apiHost, '/');
+        $apiHost = rtrim(trim($apiHost), '/');
 
         $terminalId = $this->getSetting($journalId, 'terminalId');
         $username = $this->getSetting($journalId, 'username');
         $password = $this->getSetting($journalId, 'password');
 
-        $url = $apiHost . '/api/v1/payment/' . urlencode($paymentId) . '/status';
+        $url = $apiHost . '/payment/' . urlencode($paymentId) . '/status';
         $headers = [
             'X-Terminal-Id: ' . $terminalId,
             'Authorization: Basic ' . base64_encode($username . ':' . $password),
