@@ -92,17 +92,25 @@ class QiPaymentPlugin extends PaymethodPlugin
                 return;
             }
 
-            $paymentRequested = false;
+            $paymentAction = null;
             foreach ($event->actions as $action) {
                 if (($action['id'] ?? null) === 'payment') {
-                    $paymentRequested = filter_var($action['requestPayment'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                    $paymentAction = $action;
                 }
             }
-            if (!$paymentRequested) {
+            if ($paymentAction === null) {
                 return;
             }
 
             $submission = $event->submission;
+
+            // Core OJS stores nothing when the editor picks "Waive" in the Accept decision,
+            // so the fee stays "Unpaid" and publishing is blocked. Record the waiver.
+            if (!filter_var($paymentAction['requestPayment'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                $this->recordPublicationFeeWaiver($submission, $event->editor, $context);
+                return;
+            }
+
             $queuedPaymentId = $this->findPublicationQueuedPaymentId($submission->getId());
             if (!$queuedPaymentId) {
                 error_log('Qi: no queued publication payment found for submission ' . $submission->getId() . '; payment discussion not created.');
@@ -138,6 +146,35 @@ class QiPaymentPlugin extends PaymethodPlugin
         } catch (\Throwable $e) {
             error_log('Qi: failed to create payment discussion: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Store a zero-amount completed publication payment, exactly as the
+     * "Waived" option of the Payments widget does.
+     */
+    protected function recordPublicationFeeWaiver($submission, $editor, $context): void
+    {
+        $paymentManager = Application::get()->getPaymentManager($context);
+        if (!$paymentManager->publicationEnabled()) {
+            return;
+        }
+
+        $completedPaymentDao = DAORegistry::getDAO('OJSCompletedPaymentDAO'); /** @var \APP\payment\ojs\OJSCompletedPaymentDAO $completedPaymentDao */
+        if ($completedPaymentDao->getByAssoc(null, OJSPaymentManager::PAYMENT_TYPE_PUBLICATION, $submission->getId())) {
+            return;
+        }
+
+        $request = Application::get()->getRequest();
+        $queuedPayment = $paymentManager->createQueuedPayment(
+            $request,
+            OJSPaymentManager::PAYMENT_TYPE_PUBLICATION,
+            $editor->getId(),
+            $submission->getId(),
+            0,
+            ''
+        );
+        $paymentManager->queuePayment($queuedPayment);
+        $paymentManager->fulfillQueuedPayment($request, $queuedPayment, 'ManualPayment');
     }
 
     /**
@@ -464,15 +501,15 @@ class QiPaymentPlugin extends PaymethodPlugin
         $testMode = $this->getSetting($journalId, 'qiTestMode');
         $apiHost = $this->getSetting($journalId, 'apiHost');
         if (empty($apiHost)) {
-            $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq/api/v1' : 'https://3ds-api.qi.iq/api/v1';
+            $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
         }
-        $apiHost = rtrim(trim($apiHost), '/');
+        $apiHost = rtrim($apiHost, '/');
 
         $terminalId = $this->getSetting($journalId, 'terminalId');
         $username = $this->getSetting($journalId, 'username');
         $password = $this->getSetting($journalId, 'password');
 
-        $url = $apiHost . '/payment/' . urlencode($paymentId) . '/status';
+        $url = $apiHost . '/api/v1/payment/' . urlencode($paymentId) . '/status';
         $headers = [
             'X-Terminal-Id: ' . $terminalId,
             'Authorization: Basic ' . base64_encode($username . ':' . $password),
