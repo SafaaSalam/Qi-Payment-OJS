@@ -494,16 +494,25 @@ class QiPaymentPlugin extends PaymethodPlugin
     }
 
     /**
+     * Base URL of Qi's API. A trailing "/api/v1" is dropped because every
+     * request path already starts with it.
+     */
+    public function getApiHost($journalId): string
+    {
+        $apiHost = trim((string) $this->getSetting($journalId, 'apiHost'));
+        if ($apiHost === '') {
+            $apiHost = $this->getSetting($journalId, 'qiTestMode') ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
+        }
+        $apiHost = rtrim($apiHost, '/');
+        return preg_replace('#/api(/v1)?$#i', '', $apiHost);
+    }
+
+    /**
      * Query Qi's GET /status endpoint for the current state of a payment.
      */
     protected function fetchPaymentStatus($journalId, $paymentId)
     {
-        $testMode = $this->getSetting($journalId, 'qiTestMode');
-        $apiHost = $this->getSetting($journalId, 'apiHost');
-        if (empty($apiHost)) {
-            $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
-        }
-        $apiHost = rtrim($apiHost, '/');
+        $apiHost = $this->getApiHost($journalId);
 
         $terminalId = $this->getSetting($journalId, 'terminalId');
         $username = $this->getSetting($journalId, 'username');

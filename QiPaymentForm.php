@@ -63,12 +63,7 @@ class QiPaymentForm extends Form
             $journalId = $journal->getId();
             
             // Set up API host
-            $testMode = $this->_qiPaymentPlugin->getSetting($journalId, 'qiTestMode');
-            $apiHost = $this->_qiPaymentPlugin->getSetting($journalId, 'apiHost');
-            if (empty($apiHost)) {
-                $apiHost = $testMode ? 'https://uat-sandbox-3ds-api.qi.iq' : 'https://3ds-api.qi.iq';
-            }
-            $apiHost = rtrim($apiHost, '/');
+            $apiHost = $this->_qiPaymentPlugin->getApiHost($journalId);
 
             // Setup credentials
             $terminalId = $this->_qiPaymentPlugin->getSetting($journalId, 'terminalId');
